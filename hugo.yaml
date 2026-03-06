@@ -1,0 +1,102 @@
+baseURL: "https://kuanglixie.github.io/"
+title: "ML & Econ Notes"
+paginate: 10
+theme: PaperMod
+
+enableRobotsTXT: true
+buildDrafts: false
+buildFuture: false
+buildExpired: false
+
+minify:
+  disableXML: true
+  minifyOutput: true
+
+params:
+  env: production
+  title: "ML & Econ Notes"
+  description: "Practical insights on machine learning, economics, and food."
+  keywords: [Machine Learning, Deep Learning, Economics, Blog]
+  author: "Kuangli Xie"
+  defaultTheme: dark
+  disableThemeToggle: false
+  ShowReadingTime: true
+  ShowShareButtons: true
+  ShowPostNavLinks: true
+  ShowBreadCrumbs: true
+  ShowCodeCopyButtons: true
+  ShowWordCount: false
+  ShowRssButtonInSectionTermList: true
+  UseHugoToc: true
+  disableSpecial1stPost: false
+  disableScrollToTop: false
+  hidemeta: false
+  hideSummary: false
+  showtoc: true
+
+  assets:
+    disableHLJS: true
+    favicon: "/favicon.ico"
+
+  profileMode:
+    enabled: false
+
+  homeInfoParams:
+    Title: "ML & Econ Notes"
+    Content: >
+      Practical insights on machine learning, economics, and everything in between.
+      Topics include deep learning models, recommender systems, quantitative economics, and food.
+
+  socialIcons:
+    - name: github
+      url: "https://github.com/kuanglixie"
+    - name: email
+      url: "mailto:xiekuangli@gmail.com"
+    - name: rss
+      url: "/index.xml"
+
+  cover:
+    hidden: false
+    hiddenInList: false
+    hiddenInSingle: false
+
+  fuseOpts:
+    isCaseSensitive: false
+    shouldSort: true
+    location: 0
+    distance: 1000
+    threshold: 0.4
+    minMatchCharLength: 0
+    keys: ["title", "permalink", "summary", "content"]
+
+menu:
+  main:
+    - identifier: posts
+      name: Posts
+      url: /posts/
+      weight: 1
+    - identifier: tags
+      name: Tags
+      url: /tags/
+      weight: 2
+    - identifier: archives
+      name: Archives
+      url: /archives/
+      weight: 3
+    - identifier: search
+      name: Search
+      url: /search/
+      weight: 4
+
+outputs:
+  home:
+    - HTML
+    - RSS
+    - JSON
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true
+  highlight:
+    noClasses: false
