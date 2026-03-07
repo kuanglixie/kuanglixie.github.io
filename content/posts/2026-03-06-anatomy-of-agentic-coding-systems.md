@@ -1,5 +1,5 @@
 ---
-title: "Anatomy of Agentic Coding Systems: What Claude Code, Cursor, and OpenCode Actually Share"
+title: "Anatomy of Agentic Coding Systems: What Claude Code, Cursor, OpenCode, and OpenClaw Actually Share"
 date: 2026-03-06T18:00:00-08:00
 draft: false
 weight: 2
@@ -10,14 +10,14 @@ tags:
   - ML Engineering
 categories:
   - AI
-description: "A grounded teardown of production agentic coding systems—Claude Code, Cursor, OpenCode, OpenHands, Manus, and Kon—revealing that the architecture is a while loop, and the real differentiators are tool design, context management, and knowing when to stop."
+description: "A grounded teardown of seven production agentic systems—Claude Code, Cursor, OpenCode, OpenClaw, OpenHands, Manus, and Kon—revealing that the architecture is a while loop, and the real differentiators are tool design, context management, and knowing when to stop."
 showToc: true
 TocOpen: true
 ---
 
-Everyone is building agentic coding systems now. Claude Code, Cursor, OpenCode (117K GitHub stars), OpenHands, Manus—the list grows weekly. But strip away the marketing and the framework abstractions, and they all share the same skeleton.
+Everyone is building agentic coding systems now. Claude Code, Cursor, OpenCode (117K GitHub stars), OpenClaw (272K stars), OpenHands, Manus—the list grows weekly. But strip away the marketing and the framework abstractions, and they all share the same skeleton.
 
-This post tears down six production systems to extract the **bare minimum components** that make an agentic coding system work, with references to actual source code and architectural decisions.
+This post tears down seven production systems to extract the **bare minimum components** that make an agentic coding system work, with references to actual source code and architectural decisions.
 
 ---
 
@@ -58,6 +58,7 @@ Every system implements the same loop, but with slightly different termination s
 | **Claude Code** | Single-threaded `while` loop ([source](https://blog.promptlayer.com/claude-code-behind-the-scenes-of-the-master-agent-loop/)) | LLM returns text without tool calls |
 | **Cursor** | Same pattern ([docs](https://cursor.com/docs/agent/overview)) | Same |
 | **OpenCode** | Agentic loop in `prompt.ts` ([analysis](https://gist.github.com/rmk40/cde7a98c1c90614a27478216cc01551f)) | Same, plus `max-steps.txt` injection |
+| **OpenClaw** | Serialized run per session in `run.ts` ([docs](https://openclawlab.com/en/docs/concepts/agent-loop/)) | Model stops calling tools, or timeout (default 600s) |
 | **OpenHands** | Event-driven controller ([source](https://github.com/All-Hands-AI/OpenHands/blob/main/openhands/controller/agent_controller.py)) | `AgentFinishAction` event |
 | **Kon** | Turn-based async loop ([source](https://github.com/kuutsav/kon/blob/main/src/kon/loop.py)) | `StopReason.STOP` or max turns |
 | **Manus** | 6-stage circular loop ([blog](https://manus.im/hi/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus)) | Task completion or user handoff |
@@ -93,7 +94,19 @@ Tool design *is* context engineering.
 | `grep` | Content search (ripgrep) |
 | `find` | File discovery (fd) |
 
-A [Medium analysis of OpenClaw](https://medium.com/@shivamagarwal7/agentic-ai-pi-anatomy-of-a-minimal-coding-agent-powering-openclaw-5ecd4dd6b440) goes further: their "Agent Pi" core runs on just **4 tools**: `read`, `write`, `bash`, `web_fetch`.
+**OpenClaw** ships [25 default tools](https://dev.to/roobia/what-are-openclaw-tools-and-skills-complete-guide-25-tools-53-skills-39o2) organized by domain:
+
+| Category | Tools |
+|----------|-------|
+| File system | read, write, list, search, edit, apply_patch |
+| Execution | exec, python, node, process |
+| Web | web_search, web_fetch, web_screenshot, browser |
+| Communication | email, slack, discord |
+| Automation | schedule, heartbeat, memory, context |
+
+On top of this, OpenClaw layers a **Skills** system—53+ modular packages that bundle multiple tools into higher-level workflows (code review, meeting summaries, deployment). Skills are installed from [ClawHub](https://clawhub.com/) or local paths and defined in `SKILLS.md`. The key distinction: tools are primitives defined in `TOOLS.md` with name/description/parameters/safety-level; skills are compositions of tools.
+
+At the other extreme, an [analysis of OpenClaw's Agent Pi core](https://medium.com/@shivamagarwal7/agentic-ai-pi-anatomy-of-a-minimal-coding-agent-powering-openclaw-5ecd4dd6b440) shows the inner engine runs on just **4 tools**: `read`, `write`, `bash`, `web_fetch`. The 25 tools and 53 skills are layered on top.
 
 **Key design principle from Braintrust:** purpose-built tools with minimal parameters beat generic tools with many arguments. Don't expose raw APIs—wrap them into the agent's mental model:
 
@@ -132,6 +145,20 @@ The universal layered structure:
 
 **OpenCode** selects different base prompts per model family: Claude gets `anthropic.txt`, GPT gets `beast.txt`, Gemini gets `gemini.txt` ([analysis](https://gist.github.com/rmk40/cde7a98c1c90614a27478216cc01551f)). If an agent (explore, plan) defines its own prompt, it replaces the provider prompt entirely.
 
+**OpenClaw** takes the most structured approach to prompt assembly ([docs](https://openclawlab.com/en/docs/concepts/system-prompt/)). The system prompt is assembled per-run from fixed sections (runtime info, reasoning visibility, heartbeats, safety guardrails, tooling) plus **workspace bootstrap files** injected under "Project Context":
+
+| File | Purpose |
+|------|---------|
+| `IDENTITY.md` | Agent persona |
+| `SOUL.md` | Behavioral guidelines |
+| `TOOLS.md` | Available tools and usage rules |
+| `AGENTS.md` | Project-level instructions |
+| `USER.md` | User preferences |
+| `MEMORY.md` | Persistent memory |
+| `HEARTBEAT.md` | Periodic check-in rules |
+
+Bootstrap files are trimmed per-file (`bootstrapMaxChars` default: 20K) and in total (`bootstrapTotalMaxChars` default: 150K). Sub-agent sessions only inject `AGENTS.md` and `TOOLS.md` to keep context small. Internal hooks (`agent:bootstrap`) can intercept this step to swap files—for example, replacing `SOUL.md` for an alternate persona.
+
 **Instruction file discovery** is a shared pattern. All of Claude Code, OpenCode, Kon, and Cursor walk the filesystem from the working directory up to the git root, looking for `AGENTS.md` or `CLAUDE.md`. OpenCode also discovers instruction files *during tool execution*—when the `read` tool accesses a file in a subdirectory, it walks up from that directory looking for instruction files not yet loaded, injecting them as `<system-reminder>` blocks.
 
 **Kon's** approach is the most minimal: system prompt (~215 tokens) + tool definitions (~600 tokens) = under 1K tokens before conversation context. Everything else comes from discovered `AGENTS.md` files and skills.
@@ -151,6 +178,7 @@ A typical Manus task involves ~50 tool calls. At a 100:1 input-to-output token r
 | **Claude Code** | Auto-compaction via summarizer component | ~92% of context window |
 | **Cursor** | Automatic summarization of older messages ([docs](https://cursor.com/docs/agent/overview)) | Context window fills |
 | **OpenCode** | Dedicated `compaction` agent with own prompt ([analysis](https://gist.github.com/rmk40/cde7a98c1c90614a27478216cc01551f)) | Token threshold |
+| **OpenClaw** | Auto-compaction + plugin hooks ([docs](https://openclawlab.com/en/docs/concepts/compaction/)) | Near context window limit |
 | **Kon** | Configurable compaction with `continue` or `pause` modes ([source](https://github.com/kuutsav/kon/blob/main/src/kon/loop.py)) | `buffer_tokens` setting |
 | **Manus** | Three-strategy: isolate, offload, reduce ([blog](https://manus.im/hi/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus)) | KV-cache aware |
 
@@ -193,10 +221,13 @@ Every system needs a safe place to run code. The trade-off is speed vs. safety:
 | **Cursor** | Local machine + permission gates | Same |
 | **OpenCode** | Local machine + configurable permissions ([analysis](https://gist.github.com/rmk40/cde7a98c1c90614a27478216cc01551f)) | Bash parses commands with tree-sitter for path checking |
 | **OpenHands** | Docker container by default ([docs](https://docs.openhands.dev/sdk/arch/overview)) | Full isolation |
+| **OpenClaw** | Configurable: sandbox + tool policy + exec approvals ([docs](https://openclawlab.com/en/docs/concepts/sandbox/)) | Layered security boundaries |
 | **Kon** | Local, no sandbox ([README](https://github.com/kuutsav/kon)) | Simplicity over isolation |
 | **Manus** | Virtual machine per session ([blog](https://manus.im/hi/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus)) | Full isolation |
 
 OpenCode's approach is interesting: the `bash` tool uses **tree-sitter** to parse shell commands, extract individual commands, and resolve file paths via `realpath`. Paths outside the project trigger external directory permission checks. This is more sophisticated than a simple allowlist.
+
+OpenClaw's approach is the most layered ([docs](https://openclawlab.com/en/docs/gateway/sandbox-vs-tool-policy-vs-elevated/)). It separates **three distinct security boundaries**: sandbox (filesystem isolation), tool policy (which tools are allowed), and exec approvals (user confirmation for dangerous operations). The [system prompt docs](https://openclawlab.com/en/docs/concepts/system-prompt/) explicitly note that *"safety guardrails in the system prompt are advisory—they guide model behavior but do not enforce policy. Use tool policy, exec approvals, sandboxing, and channel allowlists for hard enforcement."*
 
 The `edit` tool across systems also reveals different philosophies. OpenCode runs the model's `oldString` through a chain of **9 increasingly fuzzy replacer strategies**—from exact match through whitespace-normalized, indentation-flexible, and Levenshtein distance matching. Claude Code reportedly uses similar fuzzy matching. Kon keeps it simple: exact match only.
 
@@ -214,6 +245,7 @@ The solution: run the search in a separate agent loop with its own context windo
 | **Cursor** | Explore, Bash, Browser ([docs](https://cursor.com/docs/agent/subagents)) | Each isolates noisy output |
 | **OpenCode** | Build, Plan, General, Explore + 3 hidden ([analysis](https://gist.github.com/rmk40/cde7a98c1c90614a27478216cc01551f)) | Hidden agents for compaction, title, summary |
 | **OpenHands** | MonologueAgent, CodeActAgent ([docs](https://docs.openhands.dev/sdk/arch/agent)) | Event-driven delegation |
+| **OpenClaw** | `minimal` promptMode sub-agents ([docs](https://openclawlab.com/en/docs/concepts/system-prompt/)) | Sub-agents get stripped prompt (only AGENTS.md + TOOLS.md) |
 | **Kon** | None (by design) | Simplicity trade-off |
 | **Manus** | None (planner module instead) | Modular architecture |
 
@@ -233,6 +265,36 @@ From the parent agent's perspective, a subagent is just another tool:
 OpenCode's `task` tool creates a child session with restricted permissions—no todo tools, no recursive task calls unless explicitly allowed. The [Cursor docs](https://cursor.com/docs/agent/subagents) explain the three benefits: context isolation, parallel execution, and cost efficiency (cheaper models for simple searches).
 
 Kon deliberately omits subagents. From its [README](https://github.com/kuutsav/kon): the philosophy is to stay minimal and give preference to running local LLMs. For a 112-file codebase, that's a reasonable trade-off.
+
+---
+
+## OpenClaw's Unique Contribution: The Gateway Pattern
+
+Most systems in this comparison are coding-first tools (CLI or IDE). [OpenClaw](https://github.com/openclaw/openclaw) (272K GitHub stars) takes a different approach: it's a **"multi-ingress, single-kernel" runtime** ([architecture docs](https://openclawlab.com/en/docs/concepts/system-architecture/)) that can receive messages from WhatsApp, Telegram, Discord, Slack, iMessage, webhooks, and cron jobs—all routed through the same agent loop.
+
+The architecture separates five layers:
+
+```
+┌─────────────────────────────────────┐
+│  Ingress: Channels + Webhooks/Cron  │  WhatsApp, Telegram, Discord, CLI...
+├─────────────────────────────────────┤
+│  Control Plane: Gateway             │  WebSocket/HTTP, auth, routing
+├─────────────────────────────────────┤
+│  Execution Plane: Agent             │  The agentic loop (run/attempt)
+├─────────────────────────────────────┤
+│  Capability Layer: Tools+Providers  │  25 tools, 300+ models, failover
+├─────────────────────────────────────┤
+│  Data Layer: Sessions+Config        │  JSONL history, MEMORY.md
+└─────────────────────────────────────┘
+```
+
+**The Gateway** routes messages to sessions via `sessionKey`, preventing cross-talk and enabling parallel execution across sessions while maintaining serial execution within the same session ([docs](https://openclawlab.com/en/docs/concepts/agent-loop/)). This is the same queueing pattern you'd find in a production backend service, applied to agent orchestration.
+
+**Provider failover** is where OpenClaw's production-readiness shows. It abstracts 300+ models across four wire protocols (Google Generative AI, Anthropic Messages, OpenAI Responses, OpenAI Completions) with a two-stage failover system ([docs](https://openclawlab.com/en/docs/providers/failover/)): first rotate auth profiles within the same provider (round-robin with exponential backoff cooldowns), then fall back to the next model in the chain. Session stickiness pins the chosen auth profile per session to maintain provider cache warmth.
+
+**Plugin hooks** make the system extensible without forking. OpenClaw exposes hooks at nearly every stage ([docs](https://openclawlab.com/en/docs/concepts/agent-loop/)): `before_agent_start`, `before_tool_call`/`after_tool_call`, `before_compaction`/`after_compaction`, `tool_result_persist`, and `agent_end`. The `tool_result_persist` hook is particularly useful—it lets you transform tool results *before* they're written to session history, enabling custom truncation or PII redaction.
+
+This is the only system in the comparison that treats the agent loop as just one layer in a full production platform—handling auth rotation, multi-channel routing, and webhook automation alongside the core while-loop.
 
 ---
 
@@ -265,7 +327,7 @@ Based on what actually ships in production, here's the stack in tiers:
 
 ## What Actually Differentiates These Systems
 
-The architecture is the same across all six systems. The differentiation is in:
+The architecture is the same across all seven systems. The differentiation is in:
 
 **1. Tool design quality (40% of impact).** Clear tool descriptions with "when to use" and "when not to use" matter more than the number of tools. [Bloomberg's ACL 2025 research](https://arxiv.org/abs/2505.00000) found that jointly optimizing tool descriptions reduced unnecessary tool calls by 70%.
 
@@ -362,6 +424,6 @@ The architecture is trivially simple. The hard problems are tool design, context
 
 ### SDK & Tools
 10. **Anthropic Claude Agent SDK** — [GitHub](https://github.com/anthropics/claude-agent-sdk-python)
-11. **OpenClaw** — [System architecture](https://openclawlab.com/en/docs/concepts/system-architecture/) | [Agent Pi analysis](https://medium.com/@shivamagarwal7/agentic-ai-pi-anatomy-of-a-minimal-coding-agent-powering-openclaw-5ecd4dd6b440)
+11. **OpenClaw** — [GitHub (272K stars)](https://github.com/openclaw/openclaw) | [System architecture](https://openclawlab.com/en/docs/concepts/system-architecture/) | [Agent loop](https://openclawlab.com/en/docs/concepts/agent-loop/) | [System prompt](https://openclawlab.com/en/docs/concepts/system-prompt/) | [Compaction](https://openclawlab.com/en/docs/concepts/compaction/) | [Provider failover](https://openclawlab.com/en/docs/providers/failover/) | [Tools & skills guide](https://dev.to/roobia/what-are-openclaw-tools-and-skills-complete-guide-25-tools-53-skills-39o2) | [Agent Pi analysis](https://medium.com/@shivamagarwal7/agentic-ai-pi-anatomy-of-a-minimal-coding-agent-powering-openclaw-5ecd4dd6b440)
 
 *All source code links verified as of March 6, 2026.*
